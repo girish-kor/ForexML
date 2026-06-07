@@ -1,0 +1,689 @@
+flowchart TD
+
+%% =============================================================
+%% FOREX ML TRADING SYSTEM — MASTER FLOWCHART
+%% Derived from Entity-Relationship Diagram — 19 Entities / 10 Layers
+%% =============================================================
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 0 · SYSTEM BOOTSTRAP
+%% =============================================================
+    START(["`**SYSTEM START**
+    Pipeline Trigger`"])
+
+    LOAD_CFG["Load SYSTEM_CONFIG
+    broker credentials
+    risk profile params
+    model artifact path
+    feature set version
+    socket host and port"]
+
+    CHK_MT5{MT5 CONNECTION
+    established?}
+
+    RECONNECT["Increment reconnect_attempts
+    Apply backoff delay"]
+
+    MAX_RETRY{Attempts
+    exceed limit?}
+
+    FIRE_CONN_ALERT["ALERT — MT5_CONN_FAIL
+    severity: CRITICAL
+    Notify operator"]
+
+    HALT(["`**SYSTEM HALT**`"])
+
+    LOG_CONN["Log MT5_MESSAGE
+    direction: HANDSHAKE
+    is_success: true"]
+
+    START --> LOAD_CFG
+    LOAD_CFG --> CHK_MT5
+    CHK_MT5 -- "NO" --> RECONNECT
+    RECONNECT --> MAX_RETRY
+    MAX_RETRY -- "YES" --> FIRE_CONN_ALERT --> HALT
+    MAX_RETRY -- "NO" --> CHK_MT5
+    CHK_MT5 -- "YES" --> LOG_CONN
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 1 · MARKET DATA INGESTION
+%% =============================================================
+    CHK_SESSION{Active SESSION
+    exists?}
+
+    SKIP_WAIT["Wait for next
+    SESSION open_time"]
+
+    CHK_NEWS{High-impact EVENT
+    within 30 min window?}
+
+    NEWS_SUPPRESS["Set filter_flag: NEWS_SUPPRESSED
+    Skip bar processing"]
+
+    INGEST_TICK["Ingest TICK stream
+    bid / ask / spread
+    volume / timestamp_us"]
+
+    AGG_BAR["Aggregate to OHLCV_BAR
+    open / high / low / close
+    volume / spread_avg
+    timeframe tag / data_source"]
+
+    DEDUP{Composite key check
+    instrument + timeframe
+    + open_time duplicate?}
+
+    DROP_DUP["Discard duplicate bar
+    Log to PIPELINE_RUN
+    as warning"]
+
+    STORE_BAR["Persist OHLCV_BAR
+    to time-series store"]
+
+    LOG_CONN --> CHK_SESSION
+    CHK_SESSION -- "NO" --> SKIP_WAIT --> CHK_SESSION
+    CHK_SESSION -- "YES" --> CHK_NEWS
+    CHK_NEWS -- "YES" --> NEWS_SUPPRESS --> STORE_BAR
+    CHK_NEWS -- "NO" --> INGEST_TICK
+    INGEST_TICK --> AGG_BAR --> DEDUP
+    DEDUP -- "YES" --> DROP_DUP --> CHK_SESSION
+    DEDUP -- "NO" --> STORE_BAR
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 2 · SMC STRUCTURE DETECTION
+%% =============================================================
+    SMC_DISPATCH["Dispatch SMC Detection Engine
+    per INSTRUMENT per timeframe"]
+
+    DET_MSS["Detect MARKET_STRUCTURE_SHIFT
+    identify BOS and CHoCH
+    record break_bar_id
+    set direction
+    await confirmation_bars"]
+
+    CHK_MSS_CONF{confirmation_bars
+    threshold met?}
+
+    STORE_MSS["Persist MSS
+    structure_type / break_price
+    displaced high and low"]
+
+    DET_OB["Detect ORDER_BLOCK
+    last candle before impulse move
+    compute zone_high and zone_low
+    assign strength_score"]
+
+    CHK_OB_MITIG{OB price
+    revisited?}
+
+    UPDATE_OB["Update ORDER_BLOCK
+    is_mitigated = true
+    record mitigation_pct"]
+
+    STORE_OB["Persist new ORDER_BLOCK"]
+
+    DET_FVG["Detect FAIR_VALUE_GAP
+    3-candle imbalance check
+    gap_high / gap_low
+    gap_size_pips"]
+
+    CHK_FVG_FILL{Price enters
+    FVG zone?}
+
+    UPDATE_FVG["Update FVG
+    fill_pct / is_filled flag"]
+
+    STORE_FVG["Persist new FAIR_VALUE_GAP"]
+
+    DET_LIQ["Detect LIQUIDITY_POOL
+    equal highs and lows
+    swing stop clusters
+    touch_count tracking"]
+
+    CHK_LIQ_SWEPT{Pool price
+    level violated?}
+
+    UPDATE_LIQ["Update LIQUIDITY_POOL
+    is_swept = true
+    swept_at timestamp"]
+
+    STORE_LIQ["Persist new LIQUIDITY_POOL"]
+
+    STORE_BAR --> SMC_DISPATCH
+    SMC_DISPATCH --> DET_MSS & DET_OB & DET_FVG & DET_LIQ
+
+    DET_MSS --> CHK_MSS_CONF
+    CHK_MSS_CONF -- "NO" --> CHK_SESSION
+    CHK_MSS_CONF -- "YES" --> STORE_MSS
+
+    DET_OB --> CHK_OB_MITIG
+    CHK_OB_MITIG -- "YES" --> UPDATE_OB
+    CHK_OB_MITIG -- "NO" --> STORE_OB
+
+    DET_FVG --> CHK_FVG_FILL
+    CHK_FVG_FILL -- "YES" --> UPDATE_FVG
+    CHK_FVG_FILL -- "NO" --> STORE_FVG
+
+    DET_LIQ --> CHK_LIQ_SWEPT
+    CHK_LIQ_SWEPT -- "YES" --> UPDATE_LIQ
+    CHK_LIQ_SWEPT -- "NO" --> STORE_LIQ
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 3 · FEATURE ENGINEERING
+%% =============================================================
+    FEAT_DISPATCH["Feature Engineering Pipeline
+    Load FEATURE_DEFINITION registry
+    enabled features only
+    validate feature_set_version"]
+
+    COMP_PRICE["Compute Price Features
+    log-returns multi-timeframe
+    volatility: ATR and BB-width
+    momentum: RSI / MFI / ROC
+    spread normalised"]
+
+    COMP_SMC["Compute SMC Features
+    OB proximity in pips
+    OB strength_score
+    FVG fill percentage
+    liquidity pool distance
+    MSS age in bars
+    confluence zone flag"]
+
+    COMP_MICRO["Compute Microstructure Features
+    bid-ask spread ratio
+    tick volume imbalance
+    session overlap flag
+    time-of-day cyclical encoding"]
+
+    COMP_MACRO["Compute Macro Features
+    ECONOMIC_EVENT impact encoding
+    news release delta
+    DXY correlation proxy"]
+
+    NORM["Normalise and Scale
+    rolling z-score
+    min-max clip
+    handle NaN and inf
+    version-stamp vector"]
+
+    CHK_FEAT_VALID{Feature vector
+    complete and
+    within bounds?}
+
+    FLAG_FEAT_ERR["Log PIPELINE_RUN
+    error: FEAT_INVALID
+    Skip bar — no prediction"]
+
+    STORE_SNAPSHOT["Persist FEATURE_SNAPSHOT
+    instrument_id / bar_id
+    feature_set_version
+    feature_vector_blob"]
+
+    STORE_MSS & UPDATE_OB & STORE_OB & UPDATE_FVG & STORE_FVG & UPDATE_LIQ & STORE_LIQ --> FEAT_DISPATCH
+
+    FEAT_DISPATCH --> COMP_PRICE & COMP_SMC & COMP_MICRO & COMP_MACRO
+    COMP_PRICE & COMP_SMC & COMP_MICRO & COMP_MACRO --> NORM
+    NORM --> CHK_FEAT_VALID
+    CHK_FEAT_VALID -- "NO" --> FLAG_FEAT_ERR --> CHK_SESSION
+    CHK_FEAT_VALID -- "YES" --> STORE_SNAPSHOT
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 4 · ML INFERENCE — LIVE PATH
+%% =============================================================
+    LOAD_MODEL["Load Active MODEL_VERSION
+    status = DEPLOYED
+    deserialise artifact
+    validate checksum"]
+
+    CHK_MODEL_READY{Artifact loadable
+    and checksum valid?}
+
+    MODEL_LOAD_FAIL["ALERT — MODEL_LOAD_FAIL
+    severity: CRITICAL
+    Halt inference pipeline"]
+
+    RUN_LGBM["Run LightGBM Inference
+    output: prob_long
+    output: prob_short
+    output: prob_neutral"]
+
+    RUN_TABNET["Run TabNet Inference
+    output: prob_long
+    output: prob_short
+    output: prob_neutral"]
+
+    ENSEMBLE["Ensemble Blend
+    weighted average — config-driven weights
+    output: final class probabilities"]
+
+    CALIBRATE["Platt / Isotonic Calibration
+    output: calibration_score"]
+
+    STORE_PRED["Persist MODEL_PREDICTION
+    prob_long / prob_short / prob_neutral
+    predicted_direction
+    confidence_score / calibration_score
+    bar_timestamp"]
+
+    STORE_SNAPSHOT --> LOAD_MODEL
+    LOAD_MODEL --> CHK_MODEL_READY
+    CHK_MODEL_READY -- "NO" --> MODEL_LOAD_FAIL --> HALT
+    CHK_MODEL_READY -- "YES" --> RUN_LGBM & RUN_TABNET
+    RUN_LGBM & RUN_TABNET --> ENSEMBLE --> CALIBRATE --> STORE_PRED
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 5 · SIGNAL GENERATION AND CONFLUENCE SCORING
+%% =============================================================
+    CHK_CONF_THRESH{confidence_score
+    above threshold AND
+    direction not NEUTRAL?}
+
+    DISCARD_PRED["Discard low-confidence prediction
+    No signal generated"]
+
+    SCORE_CONFLUENCE["Score SIGNAL_CONFLUENCE
+    OB: unmitigated + HTF aligned  +3
+    FVG: price inside gap          +2
+    LIQ: pool swept above/below    +2
+    MSS: confirmed same direction  +3
+    output: confluence_score 0-10"]
+
+    CHK_CONFL_MIN{confluence_score
+    meets minimum?}
+
+    DISCARD_CONFL["Discard signal
+    insufficient confluence"]
+
+    BUILD_SIGNAL["Build TRADING_SIGNAL
+    direction
+    entry_price: OB zone midpoint
+    stop_loss: OB invalidation level
+    take_profit_1: 1-to-1 RR
+    take_profit_2: FVG or LIQ target
+    risk_reward_ratio / signal_strength
+    confluence_tags / status = PENDING"]
+
+    APPLY_FILTERS["Apply Filter Flags
+    NEWS_SUPPRESSED?
+    SESSION_MISMATCH?
+    MAX_OPEN_POSITIONS?
+    CORRELATED_EXPOSURE?
+    DRAWDOWN_LIMIT_HIT?"]
+
+    CHK_FILTERS{Any filter
+    flag active?}
+
+    SUPPRESS_SIGNAL["Set signal status = FILTERED
+    Log filter_flag reason"]
+
+    STORE_SIGNAL["Persist TRADING_SIGNAL
+    status = ACTIVE"]
+
+    STORE_PRED --> CHK_CONF_THRESH
+    CHK_CONF_THRESH -- "NO" --> DISCARD_PRED --> CHK_SESSION
+    CHK_CONF_THRESH -- "YES" --> SCORE_CONFLUENCE
+    SCORE_CONFLUENCE --> CHK_CONFL_MIN
+    CHK_CONFL_MIN -- "NO" --> DISCARD_CONFL --> CHK_SESSION
+    CHK_CONFL_MIN -- "YES" --> BUILD_SIGNAL
+    BUILD_SIGNAL --> APPLY_FILTERS
+    APPLY_FILTERS --> CHK_FILTERS
+    CHK_FILTERS -- "YES" --> SUPPRESS_SIGNAL --> CHK_SESSION
+    CHK_FILTERS -- "NO" --> STORE_SIGNAL
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 6 · RISK MANAGEMENT AND POSITION SIZING
+%% =============================================================
+    LOAD_RISK["Load RISK_PROFILE
+    max_risk_per_trade_pct
+    max_daily_drawdown_pct
+    max_open_positions
+    position_sizing_method
+    kelly_fraction"]
+
+    CHK_DD{Daily drawdown
+    below max limit?}
+
+    DD_BREACH["Set flag: DRAWDOWN_LIMIT_HIT
+    Halt new entries
+    ALERT severity: HIGH"]
+
+    CHK_CORR{Correlated exposure
+    within limit?}
+
+    CORR_BREACH["Set flag: CORRELATED_EXPOSURE
+    Reject signal"]
+
+    CALC_SIZING["Compute POSITION_SIZING
+    1. risk_amount = balance x risk_pct
+    2. stop_loss_pips from signal
+    3. pip_value from INSTRUMENT
+    4. lot_size = risk_amount divided by
+       stop_loss_pips x pip_value
+    5. Apply Kelly fraction cap
+    6. Clamp to min and max lot"]
+
+    CHK_MARGIN{Free margin
+    covers margin
+    required?}
+
+    MARGIN_FAIL["ALERT — MARGIN_INSUFFICIENT
+    severity: HIGH
+    Reject order"]
+
+    STORE_SIZING["Persist POSITION_SIZING
+    account_balance snapshot
+    lot_size / margin_required
+    leverage_used"]
+
+    STORE_SIGNAL --> LOAD_RISK
+    LOAD_RISK --> CHK_DD
+    CHK_DD -- "NO" --> DD_BREACH --> CHK_SESSION
+    CHK_DD -- "YES" --> CHK_CORR
+    CHK_CORR -- "NO" --> CORR_BREACH --> CHK_SESSION
+    CHK_CORR -- "YES" --> CALC_SIZING
+    CALC_SIZING --> CHK_MARGIN
+    CHK_MARGIN -- "NO" --> MARGIN_FAIL --> CHK_SESSION
+    CHK_MARGIN -- "YES" --> STORE_SIZING
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 7 · ORDER EXECUTION VIA MT5
+%% =============================================================
+    BUILD_ORDER["Build ORDER record
+    order_type: LIMIT or MARKET
+    direction / volume
+    stop_loss / take_profit
+    status = PENDING"]
+
+    SEND_MT5["Send MT5_MESSAGE
+    msg_type: ORDER_SEND
+    payload: order params
+    record sent_at"]
+
+    CHK_MT5_ACK{MT5 ACK received
+    within timeout?}
+
+    MT5_TIMEOUT["Log MT5_MESSAGE
+    is_success = false
+    Queue for retry or cancel"]
+
+    CHK_RETRY{Retry attempts
+    below limit?}
+
+    ORDER_FAIL["Set ORDER status = REJECTED
+    Log EXECUTION_LOG
+    error_code: TIMEOUT
+    ALERT severity: MEDIUM"]
+
+    PARSE_FILL["Parse MT5 fill response
+    broker_order_id
+    executed_price / slippage_pips
+    filled_at timestamp"]
+
+    CHK_FILL{ORDER status
+    = FILLED?}
+
+    REJECTION_HANDLER["Update ORDER status = REJECTED
+    record rejection_reason
+    Log EXECUTION_LOG
+    ALERT if slippage exceeds threshold"]
+
+    UPDATE_ORDER["Update ORDER record
+    executed_price / slippage_pips
+    filled_at / status = FILLED"]
+
+    CREATE_TRADE["Create TRADE record
+    open_price / volume / direction
+    stop_loss / take_profit
+    open_time"]
+
+    STORE_SIZING --> BUILD_ORDER --> SEND_MT5
+    SEND_MT5 --> CHK_MT5_ACK
+    CHK_MT5_ACK -- "NO" --> MT5_TIMEOUT --> CHK_RETRY
+    CHK_RETRY -- "YES" --> SEND_MT5
+    CHK_RETRY -- "NO" --> ORDER_FAIL --> CHK_SESSION
+    CHK_MT5_ACK -- "YES" --> PARSE_FILL --> CHK_FILL
+    CHK_FILL -- "NO" --> REJECTION_HANDLER --> CHK_SESSION
+    CHK_FILL -- "YES" --> UPDATE_ORDER --> CREATE_TRADE
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 8 · TRADE LIFECYCLE MANAGEMENT
+%% =============================================================
+    MONITOR_TRADE["Monitor Open TRADE via MT5 heartbeat
+    Poll price vs SL and TP
+    Update MAE and MFE
+    Track duration_bars"]
+
+    CHK_TRAIL{Trailing stop enabled
+    AND MFE above
+    breakeven?}
+
+    ADJUST_SL["Send MT5_MESSAGE
+    msg_type: MODIFY_ORDER
+    Update stop_loss
+    Log EXECUTION_LOG"]
+
+    CHK_CLOSE_REASON{Close trigger?}
+
+    CLOSE_SL["Close reason: STOP_LOSS_HIT"]
+
+    CLOSE_TP1["Close reason: TAKE_PROFIT_1_HIT
+    Partial close: half volume"]
+
+    CLOSE_TP2["Close reason: TAKE_PROFIT_2_HIT"]
+
+    CLOSE_MANUAL["Close reason: MANUAL or SIGNAL_REVERSAL"]
+
+    CLOSE_EXPIRY["Close reason: SESSION_CLOSE_EXPIRY"]
+
+    SETTLE_TRADE["Settle TRADE record
+    close_price / close_time
+    gross_pnl = close minus open
+    multiplied by volume x contract_size
+    net_pnl = gross minus swap minus commission
+    pnl_pips / mae_pips / mfe_pips
+    close_reason"]
+
+    UPDATE_EQUITY["Append EQUITY_CURVE
+    new balance / equity
+    drawdown_pct / runup_pct
+    timestamp"]
+
+    UPDATE_SIGNAL_STATUS["Set TRADING_SIGNAL
+    status = CLOSED"]
+
+    CREATE_TRADE --> MONITOR_TRADE
+    MONITOR_TRADE --> CHK_TRAIL
+    CHK_TRAIL -- "YES" --> ADJUST_SL --> MONITOR_TRADE
+    CHK_TRAIL -- "NO" --> CHK_CLOSE_REASON
+
+    CHK_CLOSE_REASON -- "SL hit" --> CLOSE_SL
+    CHK_CLOSE_REASON -- "TP1 hit" --> CLOSE_TP1
+    CHK_CLOSE_REASON -- "TP2 hit" --> CLOSE_TP2
+    CHK_CLOSE_REASON -- "Manual" --> CLOSE_MANUAL
+    CHK_CLOSE_REASON -- "Expiry" --> CLOSE_EXPIRY
+    CHK_CLOSE_REASON -- "Still open" --> MONITOR_TRADE
+
+    CLOSE_SL & CLOSE_TP1 & CLOSE_TP2 & CLOSE_MANUAL & CLOSE_EXPIRY --> SETTLE_TRADE
+    SETTLE_TRADE --> UPDATE_EQUITY
+    SETTLE_TRADE --> UPDATE_SIGNAL_STATUS
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 9 · PERFORMANCE ANALYTICS
+%% =============================================================
+    CALC_PERF["Compute PERFORMANCE_SNAPSHOT
+    per period: daily / weekly / monthly
+    per MODEL_VERSION
+    win_rate / profit_factor
+    expected_value
+    Sharpe / Sortino / Calmar
+    max_drawdown_pct and duration
+    avg win and loss pips
+    avg RR realised"]
+
+    CHK_PERF_GATE{profit_factor above 1.0
+    AND Sharpe above 0.5
+    AND drawdown within limit?}
+
+    PERF_DEGRADED["ALERT — PERF_DEGRADATION
+    severity: HIGH
+    Trigger model review"]
+
+    UPDATE_EQUITY --> CALC_PERF
+    UPDATE_SIGNAL_STATUS --> CALC_PERF
+    CALC_PERF --> CHK_PERF_GATE
+    CHK_PERF_GATE -- "NO" --> PERF_DEGRADED
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 10 · MODEL DRIFT MONITORING
+%% =============================================================
+    RUN_DRIFT["Run MODEL_DRIFT_MONITOR
+    sliding window evaluation
+    per MODEL_VERSION per INSTRUMENT"]
+
+    CALC_DRIFT["Compute Drift Metrics
+    PSI: live vs train feature distribution
+    KS stat: return distribution
+    live_accuracy vs val_accuracy
+    accuracy_degradation_pct
+    live_log_loss"]
+
+    CHK_DRIFT{PSI above 0.2
+    OR KS p below 0.05
+    OR degradation above 10 pct?}
+
+    SET_DRIFT_ALERT["Set drift_alert_triggered = true
+    Set alert_severity by degradation level"]
+
+    DRIFT_ALERT["ALERT — MODEL_DRIFT
+    payload: PSI / KS / accuracy delta
+    Trigger retraining pipeline"]
+
+    CHK_PERF_GATE -- "YES" --> RUN_DRIFT
+    PERF_DEGRADED --> RUN_DRIFT
+    RUN_DRIFT --> CALC_DRIFT --> CHK_DRIFT
+    CHK_DRIFT -- "NO" --> CHK_SESSION
+    CHK_DRIFT -- "YES" --> SET_DRIFT_ALERT --> DRIFT_ALERT
+
+%% ─────────────────────────────────────────────────────────────
+%% LAYER 11 · MODEL RETRAINING PIPELINE
+%% =============================================================
+    INIT_RETRAIN["Initialise PIPELINE_RUN
+    pipeline_name: RETRAIN
+    triggered_by: DRIFT_ALERT or SCHEDULED
+    record git_commit_hash"]
+
+    LOAD_HIST["Load historical OHLCV_BAR
+    FEATURE_SNAPSHOT and LABEL records
+    Apply purge_bars embargo window"]
+
+    APPLY_LABEL["Apply Triple-Barrier LABEL generation
+    horizon_bars / barrier_atr_mult
+    direction: +1 / -1 / 0
+    record MAE and MFE
+    exit_time"]
+
+    CHK_LABEL_BAL{Label class
+    distribution balanced?}
+
+    RESAMPLE["Oversample minority class via SMOTE
+    or adjust class_weight in config"]
+
+    PURGED_KFOLD["Purged Walk-Forward K-Fold CV
+    Create CROSS_VALIDATION_FOLD records
+    apply purge and embargo per fold
+    index folds by fold_number"]
+
+    TRAIN_FOLD["Train TRAINING_RUN per fold
+    LightGBM hyperparams
+    TabNet hyperparams
+    epochs with early stopping
+    record train_loss and val_loss"]
+
+    EVAL_FOLD["Evaluate fold metrics
+    fold_accuracy / fold_log_loss
+    fold_precision / fold_recall"]
+
+    AGG_FOLDS["Aggregate fold metrics
+    Compute Probabilistic Sharpe Ratio
+    Compute Deflated Sharpe Ratio
+    Output Feature importance JSON"]
+
+    CHK_PSR{PSR above 0.95
+    AND val_accuracy
+    beats incumbent?}
+
+    REJECT_MODEL["Log MODEL_VERSION status = REJECTED
+    Keep incumbent deployed
+    ALERT: RETRAIN_FAILED"]
+
+    REGISTER_MODEL["Register MODEL_VERSION
+    artifact_path / serialization_fmt
+    all eval metrics
+    status = STAGING"]
+
+    SHADOW_TEST["Shadow-mode test
+    Run new model alongside incumbent
+    for N bars — no live orders sent
+    Compare predictions vs incumbent"]
+
+    CHK_SHADOW{Shadow accuracy
+    beats incumbent on
+    holdout period?}
+
+    PROMOTE_MODEL["Promote MODEL_VERSION
+    status = DEPLOYED
+    record deployed_at timestamp
+    Retire previous: status = RETIRED"]
+
+    LOG_PIPELINE["Update PIPELINE_RUN
+    status = SUCCESS
+    record duration_sec / finished_at"]
+
+    DRIFT_ALERT --> INIT_RETRAIN
+    INIT_RETRAIN --> LOAD_HIST --> APPLY_LABEL
+    APPLY_LABEL --> CHK_LABEL_BAL
+    CHK_LABEL_BAL -- "NO" --> RESAMPLE --> PURGED_KFOLD
+    CHK_LABEL_BAL -- "YES" --> PURGED_KFOLD
+    PURGED_KFOLD --> TRAIN_FOLD --> EVAL_FOLD --> AGG_FOLDS
+    AGG_FOLDS --> CHK_PSR
+    CHK_PSR -- "NO" --> REJECT_MODEL --> CHK_SESSION
+    CHK_PSR -- "YES" --> REGISTER_MODEL --> SHADOW_TEST
+    SHADOW_TEST --> CHK_SHADOW
+    CHK_SHADOW -- "NO" --> REJECT_MODEL
+    CHK_SHADOW -- "YES" --> PROMOTE_MODEL --> LOG_PIPELINE --> CHK_SESSION
+
+%% ─────────────────────────────────────────────────────────────
+%% STYLES — Layer colour coding
+%% =============================================================
+    classDef bootstrap  fill:#1a1a2e,stroke:#e94560,color:#fff,font-weight:bold
+    classDef ingest     fill:#16213e,stroke:#0f3460,color:#a8dadc
+    classDef smc        fill:#1b2838,stroke:#66c0f4,color:#c7d5e0
+    classDef feature    fill:#0d1b2a,stroke:#e9c46a,color:#f4e9cd
+    classDef inference  fill:#1a0533,stroke:#c77dff,color:#e0aaff
+    classDef signal     fill:#003049,stroke:#fcbf49,color:#eae2b7
+    classDef risk       fill:#023e1a,stroke:#57cc99,color:#c7f9cc
+    classDef execution  fill:#2d0c00,stroke:#f77f00,color:#ffe8cc
+    classDef lifecycle  fill:#1c0c2a,stroke:#ff6b9d,color:#ffcce5
+    classDef analytics  fill:#001233,stroke:#4cc9f0,color:#caf0f8
+    classDef drift      fill:#2d1b00,stroke:#fb8500,color:#ffe8b8
+    classDef retrain    fill:#0a1628,stroke:#80ffdb,color:#d0fff2
+    classDef decision   fill:#2a2a2a,stroke:#cccccc,color:#ffffff
+    classDef alert      fill:#4a0000,stroke:#ff4444,color:#ffaaaa,font-weight:bold
+    classDef terminal   fill:#000000,stroke:#ffffff,color:#ffffff,font-weight:bold
+
+    class START,HALT terminal
+    class LOAD_CFG,LOG_CONN,RECONNECT bootstrap
+    class CHK_SESSION,SKIP_WAIT,CHK_NEWS,NEWS_SUPPRESS,INGEST_TICK,AGG_BAR,DEDUP,DROP_DUP,STORE_BAR ingest
+    class SMC_DISPATCH,DET_MSS,STORE_MSS,DET_OB,UPDATE_OB,STORE_OB,DET_FVG,UPDATE_FVG,STORE_FVG,DET_LIQ,UPDATE_LIQ,STORE_LIQ smc
+    class FEAT_DISPATCH,COMP_PRICE,COMP_SMC,COMP_MICRO,COMP_MACRO,NORM,FLAG_FEAT_ERR,STORE_SNAPSHOT feature
+    class LOAD_MODEL,RUN_LGBM,RUN_TABNET,ENSEMBLE,CALIBRATE,STORE_PRED inference
+    class DISCARD_PRED,SCORE_CONFLUENCE,DISCARD_CONFL,BUILD_SIGNAL,APPLY_FILTERS,SUPPRESS_SIGNAL,STORE_SIGNAL signal
+    class LOAD_RISK,DD_BREACH,CORR_BREACH,CALC_SIZING,STORE_SIZING risk
+    class BUILD_ORDER,SEND_MT5,MT5_TIMEOUT,ORDER_FAIL,PARSE_FILL,REJECTION_HANDLER,UPDATE_ORDER,CREATE_TRADE execution
+    class MONITOR_TRADE,ADJUST_SL,CLOSE_SL,CLOSE_TP1,CLOSE_TP2,CLOSE_MANUAL,CLOSE_EXPIRY,SETTLE_TRADE,UPDATE_EQUITY,UPDATE_SIGNAL_STATUS lifecycle
+    class CALC_PERF,PERF_DEGRADED analytics
+    class RUN_DRIFT,CALC_DRIFT,SET_DRIFT_ALERT,DRIFT_ALERT drift
+    class INIT_RETRAIN,LOAD_HIST,APPLY_LABEL,RESAMPLE,PURGED_KFOLD,TRAIN_FOLD,EVAL_FOLD,AGG_FOLDS,REJECT_MODEL,REGISTER_MODEL,SHADOW_TEST,PROMOTE_MODEL,LOG_PIPELINE retrain
+    class CHK_MT5,MAX_RETRY,CHK_MSS_CONF,CHK_OB_MITIG,CHK_FVG_FILL,CHK_LIQ_SWEPT,CHK_FEAT_VALID,CHK_MODEL_READY,CHK_CONF_THRESH,CHK_CONFL_MIN,CHK_FILTERS,CHK_DD,CHK_CORR,CHK_MARGIN,CHK_MT5_ACK,CHK_RETRY,CHK_FILL,CHK_TRAIL,CHK_CLOSE_REASON,CHK_PERF_GATE,CHK_DRIFT,CHK_LABEL_BAL,CHK_PSR,CHK_SHADOW decision
+    class FIRE_CONN_ALERT,MODEL_LOAD_FAIL,MARGIN_FAIL decision

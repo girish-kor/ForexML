@@ -1,0 +1,589 @@
+erDiagram
+
+    %% =========================================================
+    %% FOREX ML TRADING SYSTEM — Entity Relationship Diagram
+    %% =========================================================
+
+    %% ── MARKET DATA LAYER ─────────────────────────────────────
+
+    INSTRUMENT {
+        string  instrument_id       PK
+        string  symbol
+        string  base_currency
+        string  quote_currency
+        string  asset_class
+        float   pip_size
+        float   contract_size
+        float   min_lot
+        float   max_lot
+        float   lot_step
+        boolean is_active
+    }
+
+    OHLCV_BAR {
+        bigint  bar_id              PK
+        string  instrument_id       FK
+        string  timeframe
+        bigint  open_time
+        bigint  close_time
+        float   open
+        float   high
+        float   low
+        float   close
+        float   volume
+        float   spread_avg
+        string  data_source
+    }
+
+    TICK {
+        bigint  tick_id             PK
+        string  instrument_id       FK
+        bigint  timestamp_us
+        float   bid
+        float   ask
+        float   spread
+        float   volume
+        string  data_source
+    }
+
+    ECONOMIC_EVENT {
+        int     event_id            PK
+        string  country_code
+        string  currency
+        string  event_name
+        string  impact_level
+        bigint  scheduled_time
+        float   forecast_value
+        float   previous_value
+        float   actual_value
+        boolean is_released
+    }
+
+    SESSION {
+        int     session_id          PK
+        string  session_name
+        string  timezone
+        time    open_time
+        time    close_time
+        string  primary_pairs
+    }
+
+    %% ── FEATURE ENGINEERING LAYER ────────────────────────────
+
+    FEATURE_DEFINITION {
+        int     feature_id          PK
+        string  feature_name
+        string  feature_group
+        string  computation_type
+        string  parameters_json
+        string  timeframe
+        boolean is_enabled
+        string  version
+    }
+
+    FEATURE_SNAPSHOT {
+        bigint  snapshot_id         PK
+        string  instrument_id       FK
+        bigint  bar_id              FK
+        bigint  computed_at
+        string  feature_set_version
+        float   feature_vector_blob
+    }
+
+    LABEL {
+        bigint  label_id            PK
+        bigint  bar_id              FK
+        string  instrument_id       FK
+        string  labeling_method
+        int     horizon_bars
+        float   barrier_atr_mult
+        int     direction
+        float   realized_return
+        float   max_adverse_excursion
+        float   max_favorable_excursion
+        bigint  exit_time
+    }
+
+    %% ── SMART MONEY CONCEPTS LAYER ───────────────────────────
+
+    ORDER_BLOCK {
+        bigint  ob_id               PK
+        string  instrument_id       FK
+        string  timeframe
+        bigint  origin_bar_id       FK
+        string  ob_type
+        float   zone_high
+        float   zone_low
+        boolean is_mitigated
+        float   mitigation_pct
+        int     strength_score
+        bigint  detected_at
+        bigint  mitigated_at
+    }
+
+    FAIR_VALUE_GAP {
+        bigint  fvg_id              PK
+        string  instrument_id       FK
+        string  timeframe
+        bigint  origin_bar_id       FK
+        string  fvg_type
+        float   gap_high
+        float   gap_low
+        float   gap_size_pips
+        boolean is_filled
+        float   fill_pct
+        bigint  detected_at
+        bigint  filled_at
+    }
+
+    LIQUIDITY_POOL {
+        bigint  pool_id             PK
+        string  instrument_id       FK
+        string  timeframe
+        string  pool_type
+        float   price_level
+        float   tolerance_pips
+        int     touch_count
+        boolean is_swept
+        bigint  detected_at
+        bigint  swept_at
+    }
+
+    MARKET_STRUCTURE_SHIFT {
+        bigint  mss_id              PK
+        string  instrument_id       FK
+        string  timeframe
+        bigint  break_bar_id        FK
+        string  structure_type
+        string  direction
+        float   break_price
+        float   displaced_high
+        float   displaced_low
+        int     confirmation_bars
+        bigint  detected_at
+    }
+
+    %% ── ML MODEL LAYER ───────────────────────────────────────
+
+    MODEL_CONFIG {
+        int     config_id           PK
+        string  model_name
+        string  model_type
+        string  target_instrument   FK
+        string  target_timeframe
+        string  hyperparams_json
+        string  feature_set_version
+        string  label_method
+        int     walk_forward_folds
+        int     purge_bars
+        int     embargo_bars
+        string  created_by
+        bigint  created_at
+    }
+
+    MODEL_VERSION {
+        int     version_id          PK
+        int     config_id           FK
+        int     run_id              FK
+        string  artifact_path
+        string  serialization_fmt
+        float   val_accuracy
+        float   val_precision
+        float   val_recall
+        float   val_f1
+        float   val_log_loss
+        float   probabilistic_sr
+        float   deflated_sr
+        float   feature_importance_json
+        string  status
+        bigint  trained_at
+        bigint  deployed_at
+    }
+
+    TRAINING_RUN {
+        int     run_id              PK
+        int     config_id           FK
+        int     fold_index
+        bigint  train_start
+        bigint  train_end
+        bigint  val_start
+        bigint  val_end
+        float   train_loss
+        float   val_loss
+        int     epochs_completed
+        float   duration_sec
+        string  hardware_info
+        string  git_commit_hash
+        bigint  started_at
+        bigint  finished_at
+        string  status
+    }
+
+    CROSS_VALIDATION_FOLD {
+        int     fold_id             PK
+        int     run_id              FK
+        int     fold_number
+        bigint  train_start
+        bigint  train_end
+        bigint  val_start
+        bigint  val_end
+        int     train_samples
+        int     val_samples
+        float   fold_accuracy
+        float   fold_log_loss
+        float   fold_precision
+        float   fold_recall
+    }
+
+    MODEL_PREDICTION {
+        bigint  pred_id             PK
+        int     version_id          FK
+        bigint  bar_id              FK
+        string  instrument_id       FK
+        float   prob_long
+        float   prob_short
+        float   prob_neutral
+        int     predicted_direction
+        float   confidence_score
+        float   calibration_score
+        bigint  predicted_at
+        bigint  bar_timestamp
+    }
+
+    %% ── SIGNAL LAYER ─────────────────────────────────────────
+
+    TRADING_SIGNAL {
+        bigint  signal_id           PK
+        bigint  pred_id             FK
+        string  instrument_id       FK
+        int     version_id          FK
+        int     direction
+        float   entry_price
+        float   stop_loss
+        float   take_profit_1
+        float   take_profit_2
+        float   risk_reward_ratio
+        float   signal_strength
+        string  confluence_tags
+        string  filter_flags
+        string  status
+        bigint  generated_at
+        bigint  expires_at
+    }
+
+    SIGNAL_CONFLUENCE {
+        int     confluence_id       PK
+        bigint  signal_id           FK
+        bigint  ob_id               FK
+        bigint  fvg_id              FK
+        bigint  pool_id             FK
+        bigint  mss_id              FK
+        int     confluence_score
+        string  description
+    }
+
+    %% ── RISK MANAGEMENT LAYER ────────────────────────────────
+
+    RISK_PROFILE {
+        int     profile_id          PK
+        string  profile_name
+        float   max_risk_per_trade_pct
+        float   max_daily_drawdown_pct
+        float   max_open_positions
+        float   max_correlated_exposure
+        float   account_risk_pct
+        float   kelly_fraction
+        string  position_sizing_method
+        boolean use_trailing_stop
+        boolean use_breakeven
+        bigint  created_at
+    }
+
+    POSITION_SIZING {
+        bigint  sizing_id           PK
+        bigint  signal_id           FK
+        int     profile_id          FK
+        float   account_balance
+        float   risk_amount
+        float   stop_loss_pips
+        float   pip_value
+        float   lot_size
+        float   margin_required
+        float   leverage_used
+        bigint  computed_at
+    }
+
+    %% ── EXECUTION LAYER ──────────────────────────────────────
+
+    BROKER_ACCOUNT {
+        int     account_id          PK
+        string  broker_name
+        string  account_number
+        string  account_type
+        string  server_name
+        string  currency
+        float   leverage
+        float   balance
+        float   equity
+        float   margin
+        float   free_margin
+        float   margin_level_pct
+        boolean is_live
+        bigint  last_synced_at
+    }
+
+    ORDER {
+        bigint  order_id            PK
+        bigint  signal_id           FK
+        int     account_id          FK
+        bigint  sizing_id           FK
+        string  broker_order_id
+        string  instrument_id       FK
+        string  order_type
+        int     direction
+        float   requested_price
+        float   executed_price
+        float   slippage_pips
+        float   volume
+        float   stop_loss
+        float   take_profit
+        string  status
+        string  rejection_reason
+        bigint  submitted_at
+        bigint  filled_at
+        bigint  closed_at
+        bigint  expiry_time
+        string  comment
+    }
+
+    TRADE {
+        bigint  trade_id            PK
+        bigint  order_id            FK
+        bigint  signal_id           FK
+        int     account_id          FK
+        string  instrument_id       FK
+        int     direction
+        float   open_price
+        float   close_price
+        float   volume
+        float   stop_loss
+        float   take_profit
+        float   gross_pnl
+        float   swap
+        float   commission
+        float   net_pnl
+        float   pnl_pips
+        float   mae_pips
+        float   mfe_pips
+        string  close_reason
+        bigint  open_time
+        bigint  close_time
+        int     duration_bars
+    }
+
+    EXECUTION_LOG {
+        bigint  log_id              PK
+        bigint  order_id            FK
+        string  event_type
+        string  event_source
+        float   price_at_event
+        string  payload_json
+        string  error_code
+        string  error_message
+        bigint  logged_at
+    }
+
+    %% ── MT5 INTEGRATION LAYER ────────────────────────────────
+
+    MT5_CONNECTION {
+        int     conn_id             PK
+        int     account_id          FK
+        string  host
+        int     port
+        string  protocol
+        string  status
+        bigint  last_heartbeat_at
+        int     reconnect_attempts
+        float   avg_latency_ms
+    }
+
+    MT5_MESSAGE {
+        bigint  msg_id              PK
+        int     conn_id             FK
+        string  direction
+        string  msg_type
+        string  payload_json
+        string  response_json
+        boolean is_success
+        float   roundtrip_ms
+        bigint  sent_at
+        bigint  ack_at
+    }
+
+    %% ── PERFORMANCE ANALYTICS LAYER ──────────────────────────
+
+    PERFORMANCE_SNAPSHOT {
+        int     snap_id             PK
+        int     account_id          FK
+        int     version_id          FK
+        string  period_type
+        bigint  period_start
+        bigint  period_end
+        int     total_trades
+        int     winning_trades
+        int     losing_trades
+        float   win_rate
+        float   gross_profit
+        float   gross_loss
+        float   net_profit
+        float   profit_factor
+        float   expected_value
+        float   sharpe_ratio
+        float   sortino_ratio
+        float   calmar_ratio
+        float   max_drawdown_pct
+        float   max_drawdown_duration_bars
+        float   avg_win_pips
+        float   avg_loss_pips
+        float   avg_rr_realized
+        float   total_commission
+        float   total_swap
+        bigint  computed_at
+    }
+
+    EQUITY_CURVE {
+        bigint  curve_id            PK
+        int     account_id          FK
+        bigint  timestamp
+        float   balance
+        float   equity
+        float   drawdown_pct
+        float   runup_pct
+    }
+
+    MODEL_DRIFT_MONITOR {
+        int     monitor_id          PK
+        int     version_id          FK
+        string  instrument_id       FK
+        bigint  window_start
+        bigint  window_end
+        float   psi_score
+        float   ks_stat
+        float   live_accuracy
+        float   live_log_loss
+        float   accuracy_degradation_pct
+        boolean drift_alert_triggered
+        string  alert_severity
+        bigint  evaluated_at
+    }
+
+    %% ── SYSTEM LAYER ─────────────────────────────────────────
+
+    PIPELINE_RUN {
+        int     pipeline_id         PK
+        string  pipeline_name
+        string  triggered_by
+        string  status
+        string  config_snapshot_json
+        bigint  started_at
+        bigint  finished_at
+        float   duration_sec
+        string  error_message
+        string  git_commit_hash
+    }
+
+    SYSTEM_CONFIG {
+        int     config_id           PK
+        string  config_key
+        string  config_value
+        string  config_group
+        string  data_type
+        boolean is_secret
+        bigint  updated_at
+        string  updated_by
+    }
+
+    ALERT {
+        int     alert_id            PK
+        string  alert_type
+        string  severity
+        string  source_entity
+        string  source_entity_id
+        string  message
+        string  payload_json
+        boolean is_acknowledged
+        string  acknowledged_by
+        bigint  fired_at
+        bigint  acknowledged_at
+    }
+
+    %% =========================================================
+    %% RELATIONSHIPS
+    %% =========================================================
+
+    %% Market Data
+    INSTRUMENT         ||--o{ OHLCV_BAR             : "has bars"
+    INSTRUMENT         ||--o{ TICK                   : "has ticks"
+    INSTRUMENT         ||--o{ ORDER_BLOCK            : "has order blocks"
+    INSTRUMENT         ||--o{ FAIR_VALUE_GAP         : "has FVGs"
+    INSTRUMENT         ||--o{ LIQUIDITY_POOL         : "has liquidity pools"
+    INSTRUMENT         ||--o{ MARKET_STRUCTURE_SHIFT : "has MSS events"
+    INSTRUMENT         ||--o{ MODEL_CONFIG           : "is target of"
+    INSTRUMENT         ||--o{ TRADING_SIGNAL         : "generates signals for"
+    INSTRUMENT         ||--o{ MODEL_PREDICTION       : "has predictions"
+    INSTRUMENT         ||--o{ ORDER                  : "is traded via"
+    INSTRUMENT         ||--o{ TRADE                  : "has trades"
+    INSTRUMENT         ||--o{ MODEL_DRIFT_MONITOR    : "is monitored for"
+
+    %% Feature Engineering
+    OHLCV_BAR          ||--o{ FEATURE_SNAPSHOT       : "has features"
+    OHLCV_BAR          ||--o| LABEL                  : "has label"
+    OHLCV_BAR          ||--o{ ORDER_BLOCK            : "originates OB"
+    OHLCV_BAR          ||--o{ FAIR_VALUE_GAP         : "originates FVG"
+    OHLCV_BAR          ||--o{ MARKET_STRUCTURE_SHIFT : "breaks structure"
+    OHLCV_BAR          ||--o{ MODEL_PREDICTION       : "generates prediction"
+
+    %% ML Training
+    MODEL_CONFIG       ||--o{ MODEL_VERSION          : "produces"
+    MODEL_CONFIG       ||--o{ TRAINING_RUN           : "drives"
+    TRAINING_RUN       ||--o{ CROSS_VALIDATION_FOLD  : "contains folds"
+    TRAINING_RUN       ||--o| MODEL_VERSION          : "produces version"
+
+    %% Prediction to Signal
+    MODEL_VERSION      ||--o{ MODEL_PREDICTION       : "generates"
+    MODEL_VERSION      ||--o{ PERFORMANCE_SNAPSHOT   : "tracked in"
+    MODEL_VERSION      ||--o{ MODEL_DRIFT_MONITOR    : "monitored by"
+    MODEL_PREDICTION   ||--o| TRADING_SIGNAL         : "triggers"
+
+    %% Signal Confluence
+    TRADING_SIGNAL     ||--o| SIGNAL_CONFLUENCE      : "has confluence"
+    ORDER_BLOCK        ||--o{ SIGNAL_CONFLUENCE      : "contributes to"
+    FAIR_VALUE_GAP     ||--o{ SIGNAL_CONFLUENCE      : "contributes to"
+    LIQUIDITY_POOL     ||--o{ SIGNAL_CONFLUENCE      : "contributes to"
+    MARKET_STRUCTURE_SHIFT ||--o{ SIGNAL_CONFLUENCE  : "contributes to"
+
+    %% Risk & Sizing
+    TRADING_SIGNAL     ||--o| POSITION_SIZING        : "requires sizing"
+    RISK_PROFILE       ||--o{ POSITION_SIZING        : "governs"
+
+    %% Execution
+    TRADING_SIGNAL     ||--o{ ORDER                  : "executes as"
+    POSITION_SIZING    ||--o| ORDER                  : "determines size of"
+    BROKER_ACCOUNT     ||--o{ ORDER                  : "receives"
+    BROKER_ACCOUNT     ||--o{ TRADE                  : "holds"
+    BROKER_ACCOUNT     ||--o{ EQUITY_CURVE           : "tracks"
+    BROKER_ACCOUNT     ||--o{ PERFORMANCE_SNAPSHOT   : "measured in"
+    ORDER              ||--o{ TRADE                  : "becomes"
+    ORDER              ||--o{ EXECUTION_LOG          : "logged in"
+    TRADING_SIGNAL     ||--o{ TRADE                  : "results in"
+
+    %% MT5 Integration
+    BROKER_ACCOUNT     ||--o{ MT5_CONNECTION         : "connected via"
+    MT5_CONNECTION     ||--o{ MT5_MESSAGE            : "transmits"
+
+    %% Analytics
+    TRADE              ||--o{ EQUITY_CURVE           : "updates"
+
+    %% Pipeline
+    PIPELINE_RUN       ||--o{ ALERT                  : "fires"
+    MODEL_DRIFT_MONITOR ||--o{ ALERT                 : "fires"
