@@ -1,14 +1,24 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "forexml"
 version = "0.1.0"
-description = "Forex Machine Learning Trading System"
+description = "Machine Learning-based Forex Trading System"
+readme = "README.md"
+requires-python = ">=3.12"
 authors = [
-    { name = "Girish", email = "your.email@example.com" }
+    { name = "Girish Kor", email = "girishkoe05@gmail.com" }
 ]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: Microsoft :: Windows",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
 dependencies = [
     "MetaTrader5",
     "numpy>=2.0.0,<2.3.0",
@@ -21,11 +31,40 @@ dependencies = [
     "imbalanced-learn",
     "pyarrow>=24.0.0"
 ]
-requires-python = ">=3.8"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black>=23.0",
+    "ruff>=0.1.0"
+]
 
 [project.scripts]
-forexml = "main:main"
+forexml = "main:main" 
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["main"]
+py-modules = ["main", "analytics", "config", "features", "schemas", "system"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["*"]
+exclude = ["__pycache__", "docs", "build", "*.egg-info"]
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+# Basic rules to lint for (E = pycodestyle, F = Pyflakes, I = isort)
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
